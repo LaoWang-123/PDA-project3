@@ -1,0 +1,266 @@
+---
+title: "Evaluation of Cardiovascular Risk Prediction Models in NHANES Population"
+author: "Liangkang Wang"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+format: pdf
+editor: visual
+header-includes:
+   - "\\usepackage{array}"
+   - "\\usepackage{calc}"
+   - "\\newcolumntype{C}[1]{>{\\centering\\arraybackslash}p{#1}}"
+   - "\\newcolumntype{L}[1]{>{\\raggedright\\arraybackslash}p{#1}}"
+   - "\\newcolumntype{R}[1]{>{\\raggedleft\\arraybackslash}p{#1}}"
+abstract: |
+  A brief summary (300 words or less) of the major results and conclusions aimed at a non-technical reader.
+---
+```{r}
+#| label: library and function define
+#| echo: false
+#| warning: false
+
+library(riskCommunicator)
+library(tidyverse)
+library(tableone)
+library(nhanesA)
+library(knitr)
+
+missing_heatmap <- function(data,title,color_pre = "yellow", color_miss = "black"){
+  missing_values <- is.na(data)
+
+# Melt the matrix for use with ggplot
+missing_melted <- reshape2::melt(missing_values,
+                                 id.vars = rownames(missing_values))
+
+# Create the heatmap
+g <- ggplot2::ggplot(missing_melted, aes(x = Var2, y = Var1)) +
+  geom_tile(aes(fill = value)) +
+  scale_fill_manual(name = "", labels = c("Present", "Missing"),
+                    values = c(color_pre,color_miss)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Variables", y = "Observations",title = title)+
+  theme(plot.title = element_text(hjust = 0.5))
+return(g)
+}
+```
+
+# Introduction
+- Overview of the project.
+- Importance of evaluating prediction models in different populations.
+- Brief description of the Framingham Heart Study and NHANES.
+
+# Data Sources and Preparation
+
+## Framingham Heart Study Data
+
+The Framingham Heart Study data set is an integral component of our analysis, serving as the source study data for the cardiovascular risk prediction model. This data set originates from the Framingham Heart Study, a pioneering long-term prospective study focused on the etiology of cardiovascular disease. Initiated in 1948 in Framingham, Massachusetts, the study initially enrolled 5,209 subjects and has since been instrumental in advancing our understanding of cardiovascular risk factors and their combined effects. The data set we are utilizing is a subset of this extensive study, encompassing laboratory, clinic, questionnaire, and adjudicated event data for 4,434 participants. These participants underwent examinations approximately every six years from 1956 to 1968, and each was followed for a total of 24 years. The data set includes detailed information on various parameters such as serum cholesterol levels, blood pressure, smoking history, body mass index (BMI), and diabetes status, along with outcomes like myocardial infarction, stroke, and death. It is a rich resource that provides comprehensive insights into cardiovascular health and disease progression, making it an ideal foundation for developing and evaluating prediction models for cardiovascular events.
+
+```{r}
+#| warning: false
+#| label: framingham_data
+#| echo: false
+
+data("framingham")
+
+# The Framingham data has been used to create models for cardiovascular risk.
+# The variable selection and model below are designed to mimic the models used
+# in the paper General Cardiovascular Risk Profile for Use in Primary Care 
+# This paper is available (cvd_risk_profile.pdf) on Canvas.
+
+framingham_df <- framingham %>% select(c(CVD, TIMECVD, SEX, TOTCHOL, AGE,
+                                      SYSBP, DIABP, CURSMOKE, DIABETES, BPMEDS,
+                                      HDLC, BMI))
+### Missing data
+#framingham_df <- na.omit(framingham_df)
+
+#CreateTableOne(data=framingham_df, strata = c("SEX"))
+
+# Get blood pressure based on whether or not on BPMEDS
+framingham_df$SYSBP_UT <- ifelse(framingham_df$BPMEDS == 0, 
+                                 framingham_df$SYSBP, 0)
+framingham_df$SYSBP_T <- ifelse(framingham_df$BPMEDS == 1, 
+                                framingham_df$SYSBP, 0)
+# Looking at risk within 15 years - remove censored data
+#dim(framingham_df)
+framingham_df <- framingham_df %>%
+  filter(!(CVD == 0 & TIMECVD <= 365*15)) %>%
+  select(-c(TIMECVD))
+
+a <- CreateTableOne(data=framingham_df, strata = c("SEX"))
+table_matrix <- print(a, printToggle = FALSE, noSpaces = TRUE)[,-4]
+colnames(table_matrix)[1] <- "Male"
+colnames(table_matrix)[2] <- "Female"
+
+# Use kable to render the table
+kable(table_matrix, format = "latex", booktabs = TRUE, 
+      col.names = c("Variable", "Male", "Female", "p-value"))
+
+# Filter to each sex
+framingham_df_men <- framingham_df %>% filter(SEX == 1)
+framingham_df_women <- framingham_df %>% filter(SEX == 2)
+
+```
+
+## NHANES Data
+
+The National Health and Nutrition Examination Survey (NHANES) data is a crucial element of our study, offering a comprehensive look at various health and nutritional parameters of the U.S. population. NHANES is a program of studies designed to assess the health and nutritional status of adults and children in the United States, and it is unique in that it combines interviews and physical examinations.
+
+```{r}
+#| echo: false
+#| label: nhanes_data
+#| warning: false
+
+# blood pressure, demographic, bmi, smoking, and hypertension info
+bpx_2017 <- nhanes("BPX_J") %>% 
+  select(SEQN, BPXSY1 ) %>% 
+  rename(SYSBP = BPXSY1)
+demo_2017 <- nhanes("DEMO_J") %>% 
+  select(SEQN, RIAGENDR, RIDAGEYR) %>% 
+  rename(SEX = RIAGENDR, AGE = RIDAGEYR)
+bmx_2017 <- nhanes("BMX_J") %>% 
+  select(SEQN, BMXBMI) %>% 
+  rename(BMI = BMXBMI)
+smq_2017 <- nhanes("SMQ_J") %>%
+  mutate(CURSMOKE = case_when(SMQ040 %in% c(1,2) ~ 1,
+                              SMQ040 == 3 ~ 0, 
+                              SMQ020 == 2 ~ 0)) %>%
+  select(SEQN, CURSMOKE)
+bpq_2017 <- nhanes("BPQ_J") %>% 
+  mutate(BPMEDS = ifelse(BPQ050A == 1, 1, 0)) %>%
+  select(SEQN, BPMEDS) 
+tchol_2017 <- nhanes("TCHOL_J") %>% 
+  select(SEQN, LBXTC) %>% 
+  rename(TOTCHOL = LBXTC)
+hdl_2017 <- nhanes("HDL_J") %>% 
+  select(SEQN, LBDHDD) %>% 
+  rename(HDLC = LBDHDD)
+diq_2017 <- nhanes("DIQ_J") %>% 
+  mutate(DIABETES = case_when(DIQ010 == 1 ~ 1, 
+                              DIQ010 %in% c(2,3) ~ 0, 
+                              TRUE ~ NA)) %>%
+  select(SEQN, DIABETES) 
+
+# Join data from different tables
+df_2017 <- bpx_2017 %>%
+  full_join(demo_2017, by = "SEQN") %>%
+  full_join(bmx_2017, by = "SEQN") %>%
+  full_join(hdl_2017, by = "SEQN") %>%
+  full_join(smq_2017, by = "SEQN") %>%
+  full_join(bpq_2017, by = "SEQN") %>%
+  full_join(tchol_2017, by = "SEQN") %>%
+  full_join(diq_2017, by = "SEQN")
+
+b <- CreateTableOne(data = df_2017, strata = c("SEX"))
+table_matrix <- print(b, printToggle = FALSE, noSpaces = TRUE)[,-4]
+colnames(table_matrix)[1] <- "Male"
+colnames(table_matrix)[2] <- "Female"
+
+# Use kable to render the table
+kable(table_matrix, format = "latex", booktabs = TRUE, 
+      col.names = c("Variable", "Male", "Female", "p-value"))
+# knitr::kable(table_matrix, format = "latex", booktabs = TRUE)
+```
+
+
+## Matching Variables Descriptions
+
+In our analysis, we have utilized several key variables from the Framingham Heart Study and NHANES data sets, each serving a distinct role in understanding cardiovascular risk factors. Here are the descriptions of these variables:
+
+- `CVD`: Represents the occurrence of cardiovascular disease. It is a binary variable, where 1 indicates the presence of cardiovascular disease and 0 indicates its absence.
+
+- `SEX`: Participant's sex, where 1 denotes male and 2 denotes female.
+
+- `TOTCHOL`: Serum Total Cholesterol measured in mg/dL.
+
+- `AGE`: Age of the participant at the time of the examination, measured in years.
+
+- `SYSBP`: Systolic Blood Pressure, measured in mmHg. It represents the pressure in blood vessels when the heart beats.
+
+- `DIABP`: Diastolic Blood Pressure, measured in mmHg. It represents the pressure in blood vessels between heartbeats.
+
+- `CURSMOKE`: Indicates current smoking status. 1 for current smokers, 0 for non-smokers.
+
+- `DIABETES`: Indicates whether the participant is diabetic. 1 for diabetic, 0 for non-diabetic.
+
+- `BPMEDS`: Indicates the use of anti-hypertensive medication. 1 for current use, 0 for not used.
+
+- `HDLC`: High-Density Lipoprotein Cholesterol, measured in mg/dL. Available only for the third examination period.
+
+- `BMI`: Body Mass Index, calculated as weight in kilograms divided by the square of height in meters.
+
+- `SYSBP_UT`: Systolic Blood Pressure for participants not on anti-hypertensive medication (BPMEDS = 0).
+
+- `SYSBP_T`: Systolic Blood Pressure for participants on anti-hypertensive medication (BPMEDS = 1).
+
+Each of these variables plays a crucial role in our analysis, helping to elucidate the complex interplay of various risk factors in cardiovascular health.
+
+
+
+
+## Data Integration and Preprocessing
+
+
+- Merging datasets.
+- Handling missing data and outliers.
+
+
+```{r}
+#| label: missing data
+#| warning: false
+#| echo: false
+
+missing_heatmap(data = framingham_df, title = "framingham","yellow","black")
+missing_heatmap(data = df_2017, title = "NHANES_2017","yellow","black")
+
+```
+
+- Feature selection and engineering.
+
+# Methodology
+## Model Building
+- Description of the predictive model.
+- Model training and validation methods.
+
+
+## Model Evaluation Metrics
+- Explanation of evaluation metrics (e.g., Brier score, AUC).
+
+
+## Transportability Analysis
+- Techniques used to estimate model performance in the NHANES population.
+
+# Results
+
+## Model Performance in the Framingham Study
+- Analysis of model accuracy and other metrics.
+
+
+## Transported Model Performance in NHANES
+- Comparison of model performance in the NHANES data.
+
+
+## Simulation Study Results
+- Findings from the simulated transportability analysis.
+
+
+# Discussion
+- Interpretation of results.
+- Comparison with existing literature.
+- Implications for healthcare and predictive modeling.
+
+# Limitations
+- Limitations of the methods used.
+- Limitations of the data sources.
+
+# Conclusion
+- Summary of key findings.
+- Potential future research directions.
+
+# References
+List of all references cited in the report.
+
+# Appendices
+## Additional Tables and Figures
+- Supplementary material that supports the analysis.
+## R Code
+- Link to the GitHub repository containing the project code.
