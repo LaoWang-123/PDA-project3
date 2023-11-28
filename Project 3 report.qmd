@@ -13,6 +13,7 @@ header-includes:
 abstract: |
   A brief summary (300 words or less) of the major results and conclusions aimed at a non-technical reader.
 ---
+
 ```{r}
 #| label: library and function define
 #| echo: false
@@ -23,6 +24,8 @@ library(tidyverse)
 library(tableone)
 library(nhanesA)
 library(knitr)
+library(pROC)
+#library(Metrics)
 
 missing_heatmap <- function(data,title,color_pre = "yellow", color_miss = "black"){
   missing_values <- is.na(data)
@@ -45,9 +48,10 @@ return(g)
 ```
 
 # Introduction
-- Overview of the project.
-- Importance of evaluating prediction models in different populations.
-- Brief description of the Framingham Heart Study and NHANES.
+
+-   Overview of the project.
+-   Importance of evaluating prediction models in different populations.
+-   Brief description of the Framingham Heart Study and NHANES.
 
 # Data Sources and Preparation
 
@@ -70,21 +74,25 @@ data("framingham")
 framingham_df <- framingham %>% select(c(CVD, TIMECVD, SEX, TOTCHOL, AGE,
                                       SYSBP, DIABP, CURSMOKE, DIABETES, BPMEDS,
                                       HDLC, BMI))
-### Missing data
-#framingham_df <- na.omit(framingham_df)
+framingham_df <- na.omit(framingham_df)
 
-#CreateTableOne(data=framingham_df, strata = c("SEX"))
+# CreateTableOne(data=framingham_df, strata = c("SEX"))
 
 # Get blood pressure based on whether or not on BPMEDS
 framingham_df$SYSBP_UT <- ifelse(framingham_df$BPMEDS == 0, 
                                  framingham_df$SYSBP, 0)
 framingham_df$SYSBP_T <- ifelse(framingham_df$BPMEDS == 1, 
                                 framingham_df$SYSBP, 0)
+
 # Looking at risk within 15 years - remove censored data
-#dim(framingham_df)
+
+# dim(framingham_df)
 framingham_df <- framingham_df %>%
   filter(!(CVD == 0 & TIMECVD <= 365*15)) %>%
   select(-c(TIMECVD))
+# dim(framingham_df)
+
+
 
 a <- CreateTableOne(data=framingham_df, strata = c("SEX"))
 table_matrix <- print(a, printToggle = FALSE, noSpaces = TRUE)[,-4]
@@ -94,10 +102,6 @@ colnames(table_matrix)[2] <- "Female"
 # Use kable to render the table
 kable(table_matrix, format = "latex", booktabs = TRUE, 
       col.names = c("Variable", "Male", "Female", "p-value"))
-
-# Filter to each sex
-framingham_df_men <- framingham_df %>% filter(SEX == 1)
-framingham_df_women <- framingham_df %>% filter(SEX == 2)
 
 ```
 
@@ -109,6 +113,9 @@ The National Health and Nutrition Examination Survey (NHANES) data is a crucial 
 #| echo: false
 #| label: nhanes_data
 #| warning: false
+
+# The NHANES data here finds the same covariates among this national survey data
+library(nhanesA)
 
 # blood pressure, demographic, bmi, smoking, and hypertension info
 bpx_2017 <- nhanes("BPX_J") %>% 
@@ -126,7 +133,11 @@ smq_2017 <- nhanes("SMQ_J") %>%
                               SMQ020 == 2 ~ 0)) %>%
   select(SEQN, CURSMOKE)
 bpq_2017 <- nhanes("BPQ_J") %>% 
-  mutate(BPMEDS = ifelse(BPQ050A == 1, 1, 0)) %>%
+  mutate(BPMEDS = case_when(
+    BPQ020 == 2 ~ 0,
+    BPQ040A == 2 ~ 0,
+    BPQ050A == 1 ~ 1,
+    TRUE ~ NA )) %>%
   select(SEQN, BPMEDS) 
 tchol_2017 <- nhanes("TCHOL_J") %>% 
   select(SEQN, LBXTC) %>% 
@@ -150,6 +161,17 @@ df_2017 <- bpx_2017 %>%
   full_join(tchol_2017, by = "SEQN") %>%
   full_join(diq_2017, by = "SEQN")
 
+
+# Get blood pressure based on whether or not on BPMEDS
+df_2017$SYSBP_UT <- ifelse(df_2017$BPMEDS == 0, 
+                                 df_2017$SYSBP, 0)
+df_2017$SYSBP_T <- ifelse(df_2017$BPMEDS == 1, 
+                                df_2017$SYSBP, 0)
+
+
+CreateTableOne(data = df_2017, strata = c("SEX"))
+
+
 b <- CreateTableOne(data = df_2017, strata = c("SEX"))
 table_matrix <- print(b, printToggle = FALSE, noSpaces = TRUE)[,-4]
 colnames(table_matrix)[1] <- "Male"
@@ -161,106 +183,211 @@ kable(table_matrix, format = "latex", booktabs = TRUE,
 # knitr::kable(table_matrix, format = "latex", booktabs = TRUE)
 ```
 
-
 ## Matching Variables Descriptions
 
 In our analysis, we have utilized several key variables from the Framingham Heart Study and NHANES data sets, each serving a distinct role in understanding cardiovascular risk factors. Here are the descriptions of these variables:
 
-- `CVD`: Represents the occurrence of cardiovascular disease. It is a binary variable, where 1 indicates the presence of cardiovascular disease and 0 indicates its absence.
+-   `CVD`: Represents the occurrence of cardiovascular disease. It is a binary variable, where 1 indicates the presence of cardiovascular disease and 0 indicates its absence.
 
-- `SEX`: Participant's sex, where 1 denotes male and 2 denotes female.
+-   `SEX`: Participant's sex, where 1 denotes male and 2 denotes female.
 
-- `TOTCHOL`: Serum Total Cholesterol measured in mg/dL.
+-   `TOTCHOL`: Serum Total Cholesterol measured in mg/dL.
 
-- `AGE`: Age of the participant at the time of the examination, measured in years.
+-   `AGE`: Age of the participant at the time of the examination, measured in years.
 
-- `SYSBP`: Systolic Blood Pressure, measured in mmHg. It represents the pressure in blood vessels when the heart beats.
+-   `SYSBP`: Systolic Blood Pressure, measured in mmHg. It represents the pressure in blood vessels when the heart beats.
 
-- `DIABP`: Diastolic Blood Pressure, measured in mmHg. It represents the pressure in blood vessels between heartbeats.
+-   `DIABP`: Diastolic Blood Pressure, measured in mmHg. It represents the pressure in blood vessels between heartbeats.
 
-- `CURSMOKE`: Indicates current smoking status. 1 for current smokers, 0 for non-smokers.
+-   `CURSMOKE`: Indicates current smoking status. 1 for current smokers, 0 for non-smokers.
 
-- `DIABETES`: Indicates whether the participant is diabetic. 1 for diabetic, 0 for non-diabetic.
+-   `DIABETES`: Indicates whether the participant is diabetic. 1 for diabetic, 0 for non-diabetic.
 
-- `BPMEDS`: Indicates the use of anti-hypertensive medication. 1 for current use, 0 for not used.
+-   `BPMEDS`: Indicates the use of anti-hypertensive medication. 1 for current use, 0 for not used.
 
-- `HDLC`: High-Density Lipoprotein Cholesterol, measured in mg/dL. Available only for the third examination period.
+-   `HDLC`: High-Density Lipoprotein Cholesterol, measured in mg/dL. Available only for the third examination period.
 
-- `BMI`: Body Mass Index, calculated as weight in kilograms divided by the square of height in meters.
+-   `BMI`: Body Mass Index, calculated as weight in kilograms divided by the square of height in meters.
 
-- `SYSBP_UT`: Systolic Blood Pressure for participants not on anti-hypertensive medication (BPMEDS = 0).
+-   `SYSBP_UT`: Systolic Blood Pressure for participants not on anti-hypertensive medication (BPMEDS = 0).
 
-- `SYSBP_T`: Systolic Blood Pressure for participants on anti-hypertensive medication (BPMEDS = 1).
+-   `SYSBP_T`: Systolic Blood Pressure for participants on anti-hypertensive medication (BPMEDS = 1).
 
-Each of these variables plays a crucial role in our analysis, helping to elucidate the complex interplay of various risk factors in cardiovascular health.
-
-
+We can find that `CVD` and `DIABP`  only occur in `framingham` data set, and don't occur in the target population data set. `CVD` is the outcome variable, and `DIABP` needs to be removed when merging our data set.
 
 
 ## Data Integration and Preprocessing
 
 
-- Merging datasets.
-- Handling missing data and outliers.
-
+-   Handling missing data.
 
 ```{r}
 #| label: missing data
 #| warning: false
 #| echo: false
 
-missing_heatmap(data = framingham_df, title = "framingham","yellow","black")
+#missing_heatmap(data = framingham_df, title = "framingham","yellow","black")
 missing_heatmap(data = df_2017, title = "NHANES_2017","yellow","black")
 
 ```
+-   Merging datasets.
 
-- Feature selection and engineering.
+```{r}
+df_2017 <- na.omit(df_2017)
+# Remove DIABP from framingham_df
+
+framingham_df <- framingham_df %>% select(-c(DIABP)) %>% mutate(SEQN = 0)
+df_2017 <- df_2017 %>% mutate(CVD = 0)
+
+framingham_df <- framingham_df %>% mutate(IS.framingham = 1)
+df_2017 <- df_2017 %>% mutate(IS.framingham = 0)
+
+#### Combined data set
+framingham_df_ordered <- framingham_df[names(df_2017)]
+
+Combined_df <- rbind(framingham_df_ordered,df_2017)
+
+#### Split train and test set.
+
+set.seed(123) 
+
+total_rows <- nrow(Combined_df) # Get the total number of rows in the dataframe
+train_size <- round(total_rows * 0.7)
+
+train_indices <- sample(1:total_rows, train_size)
+
+train_set <- Combined_df[train_indices, ]
+test_set <- Combined_df[-train_indices, ]
+
+#####  Filter to each sex
+# framingham_df_men <- framingham_df %>% filter(SEX == 1)
+# framingham_df_women <- framingham_df %>% filter(SEX == 2)
+# 
+# df_2017_men <-  df_2017 %>% filter(SEX == 1)
+# df_2017_women <-  df_2017 %>% filter(SEX == 2)
+
+```
+
+
+-   Feature selection and engineering.
 
 # Methodology
+
 ## Model Building
-- Description of the predictive model.
-- Model training and validation methods.
+
+-   Description of the predictive model.
+-   Model training and validation methods.
+
+```{r}
+# Fit models with log transforms for all continuous variables.
+# We used the train dataset, which is a part of framingham dataset. 
+# Also, Make two models for men and women separately.
+
+mod_men <- glm(CVD~log(HDLC)+log(TOTCHOL)+log(AGE)+log(SYSBP_UT+1)+
+                 log(SYSBP_T+1)+CURSMOKE+DIABETES, 
+      data= train_set[train_set$SEX==1 & train_set$IS.framingham==1,], family= "binomial")
+
+
+mod_women <- glm(CVD~log(HDLC)+log(TOTCHOL)+log(AGE)+log(SYSBP_UT+1)+
+                   log(SYSBP_T+1)+CURSMOKE+DIABETES, 
+               data= train_set[train_set$SEX==2 & train_set$IS.framingham==1,], family= "binomial")
+
+```
 
 
 ## Model Evaluation Metrics
-- Explanation of evaluation metrics (e.g., Brier score, AUC).
+
+-   Explanation of evaluation metrics (e.g., Brier score, AUC).
+
+Evaluate our models performance on the testing set of framingham data set.
+
+```{r}
+
+# For Men
+roc_men <- pROC::roc(test_set$CVD[test_set$SEX==1 & test_set$IS.framingham==1],
+               predict(mod_men, test_set[test_set$SEX==1 & test_set$IS.framingham==1,],
+                       type = "response"))
+auc_men <- pROC::auc(roc_men)
+brier_score_men <- mean((predict(mod_men, test_set[test_set$SEX==1 & test_set$IS.framingham==1,],
+                                 type = "response") - test_set$CVD[test_set$SEX==1 & test_set$IS.framingham==1])^2)
+
+# For Women
+roc_women <- pROC::roc(test_set$CVD[test_set$SEX==2 & test_set$IS.framingham==1],
+               predict(mod_women, test_set[test_set$SEX==2 & test_set$IS.framingham==1,],
+                       type = "response"))
+auc_women <- pROC::auc(roc_women)
+brier_score_women <- mean((predict(mod_women, test_set[test_set$SEX==2 & test_set$IS.framingham==1,],
+                                 type = "response") - test_set$CVD[test_set$SEX==2 & test_set$IS.framingham==1])^2)
+
+
+# Assuming you have already calculated roc_men and roc_women using the roc function
+# as shown in previous examples
+
+# Plot the ROC curve for men
+plot(roc_men, col = "blue", main = "ROC Curves for Men and Women", 
+     xlab = "1 - Specificity", ylab = "Sensitivity")
+
+# Add the ROC curve for women to the same plot
+lines(roc_women, col = "red")
+
+# Add a legend to the plot
+legend("bottomright", legend = c("Men", "Women"), 
+       col = c("blue", "red"), lwd = 2)
+text(0.5, 0.4, auc_men)
+text(1, 0.8, auc_women)
+# # Print out the AUC and Brier scores
+# print(paste("AUC for men:", auc_men))
+# print(paste("Brier score for men:", brier_score_men))
+# print(paste("AUC for women:", auc_women))
+# print(paste("Brier score for women:", brier_score_women))
+
+```
 
 
 ## Transportability Analysis
-- Techniques used to estimate model performance in the NHANES population.
+
+-   Techniques used to estimate model performance in the NHANES population.
+
+$$\hat{\psi_{\hat{\beta } }} =\frac{\sum^n_{i=1}I(S_i=1,D_{test,i}=1)\hat{o}(X_i)(Y_i-g_{\hat{\beta}}(X_i))^2}{\sum^n_{i=1}I(S_i=0,D_{test,i}=1)} 
+ChatGPT$$
 
 # Results
 
 ## Model Performance in the Framingham Study
-- Analysis of model accuracy and other metrics.
 
+-   Analysis of model accuracy and other metrics.
 
 ## Transported Model Performance in NHANES
-- Comparison of model performance in the NHANES data.
 
+-   Comparison of model performance in the NHANES data.
 
 ## Simulation Study Results
-- Findings from the simulated transportability analysis.
 
+-   Findings from the simulated transportability analysis.
 
 # Discussion
-- Interpretation of results.
-- Comparison with existing literature.
-- Implications for healthcare and predictive modeling.
+
+-   Interpretation of results.
+-   Comparison with existing literature.
+-   Implications for healthcare and predictive modeling.
 
 # Limitations
-- Limitations of the methods used.
-- Limitations of the data sources.
+
+-   Limitations of the methods used.
+-   Limitations of the data sources.
 
 # Conclusion
-- Summary of key findings.
-- Potential future research directions.
+
+-   Summary of key findings.
+-   Potential future research directions.
 
 # References
+
 List of all references cited in the report.
 
 # Appendices
+
 ## Additional Tables and Figures
-- Supplementary material that supports the analysis.
-## R Code
-- Link to the GitHub repository containing the project code.
+
+-   Supplementary material that supports the analysis. \## R Code
+-   Link to the GitHub repository containing the project code.
